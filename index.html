@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  STROMVERBRAUCH – Handy-Fassung (installierbar), Stand 01.10.2026
+  ============================================================================
+  Zweck:  Zählerstände festhalten und daraus den Verbrauch auswerten.
+          Eingetragen wird immer nur Datum + Zählerstand, so wie er am Zähler
+          abzulesen ist. Den Verbrauch, den Tagesschnitt, die Monatswerte und
+          die Hochrechnung aufs Jahr rechnet die App selbst aus. Mehrere
+          Zähler (z. B. Haushalt, Keller, Wallbox) sind möglich, dazu eine
+          Gesamtansicht über alle.
+
+  Warum Zählerstände und nicht gleich der Verbrauch:
+  - Der Zählerstand steht am Gerät und ist jederzeit nachprüfbar.
+  - Ein Tippfehler lässt sich später berichtigen, ohne dass alle Summen
+    danach falsch werden.
+  - Vergessene Ablesungen reißen keine Lücke: der Verbrauch dazwischen wird
+    gleichmäßig auf die Tage verteilt.
+
+  Hinweise zur Sicherheit:
+  - Es werden keine Daten erhoben und keine übertragen: kein fetch im
+    Seitenskript, kein XMLHttpRequest, kein WebSocket, kein sendBeacon,
+    keine Zählpixel, keine Fremdbibliothek, keine Fremdschrift.
+  - Die Content-Security-Policy unten lässt ausschließlich Dateien aus
+    diesem Ordner zu ('self'). Fremde Adressen sind vollständig gesperrt.
+    frame-ancestors steht dort nicht: über ein meta-Element wirkt die
+    Angabe nicht, der Browser meldet sie nur als Fehler. Wer den Schutz
+    braucht, muss ihn am Server als Kopfzeile setzen.
+  - sw.js legt nur die sechs eigenen Dateien in den Browser-Speicher, damit
+    die App offline startet. Es ruft keine fremde Adresse auf.
+  - Gespeichert wird nur im Browser des Geräts (localStorage): die Zähler,
+    die Ablesungen und die Wahl hell/dunkel. Keine Cookies, keine Weitergabe.
+  - Sichern und Einlesen laufen über eine Datei, die das Gerät selbst
+    anbietet. Dabei verlässt nichts das Gerät.
+  - Der Quelltext ist vollständig lesbar.
+  ============================================================================
+-->
+<html lang="de" data-theme="hell">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" id="farbleiste" content="#fffbeb">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Strom">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="symbol-192.png" type="image/png">
+<link rel="apple-touch-icon" href="symbol-192.png">
+<title>Stromverbrauch</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+
+  /* ---------- helles Tag-Design (Standard) ---------- */
+  :root{
+    --bg1:#fffbeb; --bg2:#f0fdf4; --bg3:#eff6ff;
+    --blob1:#fcd34d; --blob2:#6ee7b7; --blob3:#93c5fd;
+    --blob-op:.50; --blob-blur:70px;
+    --card:rgba(255,255,255,.80);
+    --card-brd:rgba(15,23,42,.10);
+    --schatten:0 12px 30px rgba(30,41,59,.12);
+    --txt:#1e293b; --muted:#64748b;
+    --feld-bg:rgba(255,255,255,.92);
+    --feld-brd:rgba(15,23,42,.16);
+    --spur:rgba(15,23,42,.07);
+    --akzent:#d97706; --akzent2:#0f766e;
+    --gruen:#15a34a; --gelb:#d97706; --rot:#e11d48;
+    --balken1:#f59e0b; --balken2:#fbbf24;
+    --chip:rgba(255,255,255,.72);
+  }
+  /* ---------- dunkles Abend-Design ---------- */
+  [data-theme="dunkel"]{
+    --bg1:#1a1206; --bg2:#0f2a24; --bg3:#101f33;
+    --blob1:#d97706; --blob2:#10b981; --blob3:#3b82f6;
+    --blob-op:.34;
+    --card:rgba(255,255,255,.08);
+    --card-brd:rgba(255,255,255,.17);
+    --schatten:0 16px 40px rgba(0,0,0,.34);
+    --txt:#f8f4ec; --muted:#bfb6a6;
+    --feld-bg:rgba(0,0,0,.30);
+    --feld-brd:rgba(255,255,255,.22);
+    --spur:rgba(0,0,0,.32);
+    --akzent:#fbbf24; --akzent2:#5eead4;
+    --gruen:#4ade80; --gelb:#fbbf24; --rot:#fb7185;
+    --balken1:#fbbf24; --balken2:#f59e0b;
+    --chip:rgba(255,255,255,.10);
+  }
+
+  html{ -webkit-text-size-adjust:100%; }
+  body{
+    margin:0;
+    padding:calc(10px + env(safe-area-inset-top)) 14px calc(84px + env(safe-area-inset-bottom));
+    min-height:100dvh;
+    font-family:"Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,sans-serif;
+    color:var(--txt);
+    background:linear-gradient(160deg,var(--bg1),var(--bg2) 50%,var(--bg3));
+    background-attachment:fixed;
+    overflow-x:hidden;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .blob{position:fixed;border-radius:50%;filter:blur(var(--blob-blur));opacity:var(--blob-op);z-index:0;pointer-events:none;transition:background .45s,opacity .45s;}
+  .b1{width:340px;height:340px;background:var(--blob1);top:-130px;left:-110px;}
+  .b2{width:300px;height:300px;background:var(--blob2);bottom:40px;right:-110px;}
+  .b3{width:260px;height:260px;background:var(--blob3);top:42%;left:-90px;}
+
+  .app{position:relative;z-index:1;max-width:560px;margin:0 auto;}
+
+  header{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+  header h1{font-size:21px;margin:0;letter-spacing:-.4px;flex:1;}
+  header h1 .blitz{display:inline-block;}
+  .rundknopf{
+    width:40px;height:40px;flex:none;padding:0;font-size:17px;line-height:1;
+    border-radius:50%;background:var(--card);border:1px solid var(--card-brd);color:var(--txt);
+    box-shadow:var(--schatten);backdrop-filter:blur(10px);cursor:pointer;
+  }
+
+  .karte{
+    background:var(--card);border:1px solid var(--card-brd);
+    border-radius:18px;padding:14px;backdrop-filter:blur(14px);
+    box-shadow:var(--schatten);margin-bottom:12px;
+  }
+  .karte h2{font-size:14px;margin:0 0 10px;letter-spacing:.3px;text-transform:uppercase;color:var(--muted);font-weight:600;}
+  .hinweis{font-size:12.5px;color:var(--muted);line-height:1.45;margin:8px 0 0;}
+
+  /* ---------- Zählerauswahl ---------- */
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;}
+  .chip{
+    padding:9px 14px;border-radius:999px;border:1px solid var(--card-brd);
+    background:var(--chip);color:var(--txt);font-size:14px;font-weight:600;
+    cursor:pointer;backdrop-filter:blur(8px);
+  }
+  .chip[aria-pressed="true"]{background:var(--akzent);border-color:var(--akzent);color:#1a1206;}
+  [data-theme="dunkel"] .chip[aria-pressed="true"]{color:#1a1206;}
+
+  /* ---------- Felder ---------- */
+  label{display:block;font-size:12.5px;color:var(--muted);margin:0 0 5px;font-weight:600;}
+  input[type="text"],input[type="date"],input[type="number"],textarea,select{
+    width:100%;padding:12px 13px;font-size:16px;font-family:inherit;color:var(--txt);
+    background:var(--feld-bg);border:1px solid var(--feld-brd);border-radius:12px;
+    outline:none;
+  }
+  input:focus,textarea:focus,select:focus{border-color:var(--akzent);}
+  /* Die Angabe des Typs muss mit stehen, sonst gewinnt die allgemeine
+     input-Regel darüber und der Wert schiebt sich über das "kWh". */
+  input[type="text"].stand{font-size:27px;font-weight:700;letter-spacing:.5px;text-align:right;padding-right:58px;}
+  .feldbox{position:relative;}
+  .einheit{position:absolute;right:14px;bottom:14px;font-size:14px;color:var(--muted);font-weight:600;pointer-events:none;}
+  .feld{margin-bottom:12px;}
+  .zeile{display:flex;gap:10px;}
+  .zeile > *{flex:1;min-width:0;}
+
+  button.knopf{
+    width:100%;padding:15px;font-size:16px;font-weight:700;font-family:inherit;
+    border:none;border-radius:14px;cursor:pointer;
+    background:linear-gradient(135deg,var(--balken2),var(--balken1));color:#1a1206;
+    box-shadow:0 8px 20px rgba(217,119,6,.28);
+  }
+  button.knopf:active{transform:translateY(1px);}
+  button.zweit{
+    background:var(--chip);color:var(--txt);border:1px solid var(--card-brd);
+    box-shadow:none;font-weight:600;
+  }
+  button.gefahr{background:none;border:1px solid var(--rot);color:var(--rot);box-shadow:none;}
+
+  /* ---------- Vorschau / Meldung ---------- */
+  .vorschau{
+    margin-top:12px;padding:12px 13px;border-radius:13px;
+    background:var(--spur);border:1px solid var(--card-brd);font-size:13.5px;line-height:1.5;
+  }
+  .vorschau b{font-size:16px;}
+  .warn{border-color:var(--rot);color:var(--rot);}
+  .meldung{
+    position:fixed;left:50%;transform:translateX(-50%);
+    bottom:calc(96px + env(safe-area-inset-bottom));z-index:40;
+    padding:11px 18px;border-radius:999px;font-size:14px;font-weight:600;
+    background:var(--txt);color:var(--bg1);box-shadow:var(--schatten);
+    opacity:0;pointer-events:none;transition:opacity .25s;
+  }
+  .meldung.an{opacity:1;}
+
+  /* ---------- Kacheln ---------- */
+  .kacheln{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .kachel{
+    background:var(--spur);border:1px solid var(--card-brd);
+    border-radius:14px;padding:11px 12px;
+  }
+  .kachel .wert{font-size:22px;font-weight:700;letter-spacing:-.4px;line-height:1.15;}
+  .kachel .wert small{font-size:12px;font-weight:600;color:var(--muted);margin-left:3px;}
+  .kachel .bez{font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.3;}
+
+  /* ---------- Diagramm ---------- */
+  .diagramm{width:100%;display:block;touch-action:manipulation;}
+  .diagramm text{font-family:inherit;fill:var(--muted);}
+  .diagramm .gitter{stroke:var(--card-brd);stroke-width:1;}
+  .diagramm .balken{fill:var(--balken1);}
+  .diagramm .balken.teil{fill:var(--balken1);opacity:.42;}
+  .diagramm .balken.gewaehlt{fill:var(--akzent2);opacity:1;}
+  .diagramm .tipp{fill:transparent;cursor:pointer;}
+  .umschalter{display:flex;gap:6px;margin-bottom:10px;}
+  .umschalter button{
+    flex:1;padding:8px;font-size:13px;font-weight:600;font-family:inherit;
+    border:1px solid var(--card-brd);background:var(--chip);color:var(--txt);
+    border-radius:10px;cursor:pointer;
+  }
+  .umschalter button[aria-pressed="true"]{background:var(--akzent);border-color:var(--akzent);color:#1a1206;}
+  .detail{margin-top:8px;font-size:13.5px;min-height:20px;color:var(--muted);}
+  .detail b{color:var(--txt);}
+
+  /* ---------- Listen ---------- */
+  .liste{list-style:none;margin:0;padding:0;}
+  .liste li{
+    display:flex;align-items:center;gap:10px;
+    padding:11px 2px;border-bottom:1px solid var(--card-brd);
+  }
+  .liste li:last-child{border-bottom:none;}
+  .liste .links{flex:1;min-width:0;}
+  .liste .datum{font-size:15px;font-weight:600;}
+  .liste .unter{font-size:12px;color:var(--muted);margin-top:2px;}
+  .liste .rechts{text-align:right;flex:none;}
+  .liste .diff{font-size:15px;font-weight:700;}
+  .liste .proTag{font-size:11.5px;color:var(--muted);}
+  .liste button{
+    flex:none;width:34px;height:34px;padding:0;font-size:15px;
+    border-radius:10px;border:1px solid var(--card-brd);background:var(--chip);
+    color:var(--txt);cursor:pointer;
+  }
+  .leer{text-align:center;color:var(--muted);font-size:13.5px;padding:18px 6px;line-height:1.5;}
+
+  table.jahre{width:100%;border-collapse:collapse;font-size:14px;}
+  table.jahre th,table.jahre td{padding:8px 4px;text-align:right;border-bottom:1px solid var(--card-brd);white-space:nowrap;}
+  table.jahre td.verbrauch{white-space:normal;}
+  table.jahre th{font-size:11.5px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;}
+  table.jahre th:first-child,table.jahre td:first-child{text-align:left;}
+  table.jahre tr:last-child td{border-bottom:none;}
+  .teiljahr{color:var(--muted);font-size:11px;}
+
+  /* ---------- Fußleiste ---------- */
+  nav.leiste{
+    position:fixed;left:0;right:0;bottom:0;z-index:30;
+    display:flex;
+    padding:6px 8px calc(6px + env(safe-area-inset-bottom));
+    background:var(--card);border-top:1px solid var(--card-brd);
+    backdrop-filter:blur(16px);
+  }
+  nav.leiste button{
+    flex:1;padding:7px 2px;border:none;background:none;color:var(--muted);
+    font-family:inherit;font-size:10.5px;font-weight:600;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;gap:3px;border-radius:12px;
+  }
+  nav.leiste button .sym{font-size:19px;line-height:1;}
+  nav.leiste button[aria-pressed="true"]{color:var(--akzent);background:var(--spur);}
+
+  .seite{display:none;}
+  .seite.an{display:block;animation:rein .22s ease;}
+  @keyframes rein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+  /* ---------- Fenster (Bearbeiten) ---------- */
+  .ueber{
+    position:fixed;inset:0;z-index:50;background:rgba(15,23,42,.45);
+    display:none;align-items:flex-end;justify-content:center;
+  }
+  .ueber.an{display:flex;}
+  .fenster{
+    width:100%;max-width:560px;max-height:88vh;overflow:auto;
+    background:linear-gradient(160deg,var(--bg1),var(--bg2));
+    border-radius:20px 20px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));
+    border-top:1px solid var(--card-brd);
+  }
+  .fenster h3{margin:0 0 14px;font-size:17px;}
+
+  footer{text-align:center;font-size:11px;color:var(--muted);padding:4px 0 10px;}
+</style>
+</head>
+<body>
+<div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+<div class="app">
+
+  <header>
+    <h1><span class="blitz">⚡</span> Stromverbrauch</h1>
+    <button class="rundknopf" id="theme" type="button" title="Hell oder dunkel">🌙</button>
+  </header>
+
+  <!-- ===================== EINTRAGEN ===================== -->
+  <section class="seite an" id="seite-eintragen">
+    <div class="karte">
+      <h2>Zähler</h2>
+      <div class="chips" id="chips-eingabe"></div>
+
+      <div class="zeile feld">
+        <div>
+          <label for="datum">Datum der Ablesung</label>
+          <input type="date" id="datum">
+        </div>
+      </div>
+
+      <div class="feld feldbox">
+        <label for="stand">Zählerstand</label>
+        <input type="text" id="stand" class="stand" inputmode="decimal" placeholder="0,0" autocomplete="off">
+        <span class="einheit">kWh</span>
+      </div>
+
+      <div class="feld">
+        <label for="notiz">Notiz (freiwillig)</label>
+        <input type="text" id="notiz" placeholder="z. B. nach Urlaub" autocomplete="off" maxlength="80">
+      </div>
+
+      <button class="knopf" id="speichern" type="button">Ablesung speichern</button>
+
+      <div class="vorschau" id="vorschau"></div>
+      <p class="hinweis">Den Stand so eintragen, wie er am Zähler steht – Nachkommastelle mit Komma. Vergessene Ablesungen sind kein Problem: der Verbrauch dazwischen wird gleichmäßig auf die Tage verteilt.</p>
+    </div>
+  </section>
+
+  <!-- ===================== AUSWERTUNG ===================== -->
+  <section class="seite" id="seite-auswertung">
+    <div class="karte">
+      <div class="chips" id="chips-auswertung"></div>
+      <div class="kacheln" id="kacheln"></div>
+    </div>
+
+    <div class="karte">
+      <h2>Verlauf</h2>
+      <div class="umschalter" id="umschalter">
+        <button type="button" data-sicht="monat12" aria-pressed="true">12 Monate</button>
+        <button type="button" data-sicht="monat24" aria-pressed="false">24 Monate</button>
+        <button type="button" data-sicht="ablesung" aria-pressed="false">Je Ablesung</button>
+      </div>
+      <div id="diagramm"></div>
+      <div class="detail" id="detail"></div>
+      <p class="hinweis" id="diagrammHinweis"></p>
+    </div>
+
+    <div class="karte">
+      <h2>Jahre im Vergleich</h2>
+      <div id="jahre"></div>
+    </div>
+  </section>
+
+  <!-- ===================== ABLESUNGEN ===================== -->
+  <section class="seite" id="seite-ablesungen">
+    <div class="karte">
+      <div class="chips" id="chips-liste"></div>
+      <ul class="liste" id="liste"></ul>
+    </div>
+  </section>
+
+  <!-- ===================== DATEN ===================== -->
+  <section class="seite" id="seite-daten">
+    <div class="karte">
+      <h2>Zähler verwalten</h2>
+      <ul class="liste" id="zaehlerliste"></ul>
+      <div class="zeile" style="margin-top:12px">
+        <input type="text" id="neuerZaehler" placeholder="Name, z. B. Wallbox" maxlength="40" autocomplete="off">
+        <button class="knopf" id="zaehlerAnlegen" type="button" style="flex:0 0 110px">Anlegen</button>
+      </div>
+    </div>
+
+    <div class="karte">
+      <h2>Sichern und einlesen</h2>
+      <div class="zeile" style="margin-bottom:10px">
+        <button class="knopf zweit" id="exportJson" type="button">Sicherung (.json)</button>
+        <button class="knopf zweit" id="exportCsv" type="button">Tabelle (.csv)</button>
+      </div>
+      <button class="knopf zweit" id="importKnopf" type="button">Sicherung einlesen</button>
+      <input type="file" id="importDatei" accept=".json,application/json" hidden>
+      <p class="hinweis">Alles liegt nur in diesem Browser. Wird er geleert oder das Gerät gewechselt, sind die Daten weg – deshalb ab und zu eine Sicherung ablegen. Das Einlesen ersetzt den gesamten Bestand.</p>
+    </div>
+
+    <div class="karte">
+      <h2>Bestand</h2>
+      <div id="bestand"></div>
+      <button class="knopf gefahr" id="allesLoeschen" type="button" style="margin-top:12px">Alle Daten löschen</button>
+    </div>
+  </section>
+
+  <footer>© by L.K. · Stand 01.10.2026</footer>
+</div>
+
+<nav class="leiste">
+  <button type="button" data-seite="eintragen" aria-pressed="true"><span class="sym">✍️</span>Eintragen</button>
+  <button type="button" data-seite="auswertung" aria-pressed="false"><span class="sym">📊</span>Auswertung</button>
+  <button type="button" data-seite="ablesungen" aria-pressed="false"><span class="sym">📋</span>Ablesungen</button>
+  <button type="button" data-seite="daten" aria-pressed="false"><span class="sym">⚙️</span>Daten</button>
+</nav>
+
+<div class="meldung" id="meldung"></div>
+
+<div class="ueber" id="ueber">
+  <div class="fenster">
+    <h3 id="fensterTitel">Ablesung ändern</h3>
+    <div class="feld">
+      <label for="bDatum">Datum</label>
+      <input type="date" id="bDatum">
+    </div>
+    <div class="feld feldbox">
+      <label for="bStand">Zählerstand</label>
+      <input type="text" id="bStand" class="stand" inputmode="decimal">
+      <span class="einheit">kWh</span>
+    </div>
+    <div class="feld">
+      <label for="bNotiz">Notiz</label>
+      <input type="text" id="bNotiz" maxlength="80" autocomplete="off">
+    </div>
+    <div class="feld">
+      <label><input type="checkbox" id="bNeustart" style="width:auto;margin-right:8px;vertical-align:-2px">Neuer Zähler ab hier (Zählerwechsel)</label>
+      <p class="hinweis" style="margin-top:4px">Setzen, wenn der Zähler getauscht wurde oder bei 0 wieder anfängt. Der Sprung zählt dann nicht als Verbrauch.</p>
+    </div>
+    <div class="zeile" style="margin-top:14px">
+      <button class="knopf zweit" id="bAbbruch" type="button">Abbrechen</button>
+      <button class="knopf" id="bSichern" type="button">Übernehmen</button>
+    </div>
+    <button class="knopf gefahr" id="bLoeschen" type="button" style="margin-top:10px">Diese Ablesung löschen</button>
+  </div>
+</div>
+
+<script>
+/* ===========================================================================
+   Stromverbrauch – Handy-Fassung
+   Aufbau des Skripts:
+     1. Speicher (laden, sichern)
+     2. Rechenteil (Tage, Tagesreihe, Monats- und Jahressummen, Kennzahlen)
+     3. Darstellung (Seiten, Chips, Kacheln, Diagramm, Listen)
+     4. Bedienung (Eingabe, Bearbeiten, Zähler, Sicherung)
+   =========================================================================== */
+(function(){
+'use strict';
+
+/* ------------------------------------------------------------------ 1. Speicher */
+
+var SCHLUESSEL = 'stromverbrauch-v1';
+var TAG_MS = 86400000;
+
+var daten = { zaehler:[], ablesungen:[], aktiv:null, theme:null };
+
+function laden(){
+  try{
+    var roh = localStorage.getItem(SCHLUESSEL);
+    if(roh){
+      var g = JSON.parse(roh);
+      if(g && typeof g === 'object'){
+        daten.zaehler    = Array.isArray(g.zaehler)    ? g.zaehler    : [];
+        daten.ablesungen = Array.isArray(g.ablesungen) ? g.ablesungen : [];
+        daten.aktiv      = g.aktiv || null;
+        daten.theme      = g.theme || null;
+      }
+    }
+  }catch(e){ /* unlesbarer Speicher: mit leerem Bestand weiterarbeiten */ }
+
+  if(!daten.zaehler.length){
+    daten.zaehler = [{ id: neueId(), name: 'Haushalt' }];
+  }
+  if(!daten.zaehler.some(function(z){ return z.id === daten.aktiv; })){
+    daten.aktiv = daten.zaehler[0].id;
+  }
+}
+
+function sichern(){
+  try{ localStorage.setItem(SCHLUESSEL, JSON.stringify(daten)); }
+  catch(e){ melden('Speichern nicht möglich – Browserspeicher voll oder gesperrt.'); }
+}
+
+function neueId(){
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8);
+}
+
+/* ------------------------------------------------------------------ 2. Rechenteil */
+
+/* Datum als fortlaufende Tagesnummer. Über Date.UTC gerechnet, damit die
+   Sommerzeitumstellung keine halben Tage erzeugt. */
+function zuTag(iso){
+  var t = String(iso).split('-');
+  return Math.round(Date.UTC(+t[0], +t[1]-1, +t[2]) / TAG_MS);
+}
+function zuIso(tag){
+  var d = new Date(tag * TAG_MS);
+  return d.getUTCFullYear() + '-' + zwei(d.getUTCMonth()+1) + '-' + zwei(d.getUTCDate());
+}
+function zwei(n){ return (n<10?'0':'') + n; }
+function heuteIso(){
+  var d = new Date();
+  return d.getFullYear() + '-' + zwei(d.getMonth()+1) + '-' + zwei(d.getDate());
+}
+function deDatum(iso){
+  var t = String(iso).split('-');
+  return t[2] + '.' + t[1] + '.' + t[0];
+}
+function kurzDatum(iso){
+  var t = String(iso).split('-');
+  return t[2] + '.' + t[1] + '.';
+}
+
+var MONATE = ['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+
+/* Zahl aus einer Eingabe lesen. Deutsche Schreibweise hat Vorrang:
+   "18.420,5" → 18420,5 · "18.420" → 18420 (Tausenderpunkt) ·
+   "18420.5" → 18420,5 (Punkt als Dezimalzeichen, wie auf mancher Tastatur). */
+function zahlAus(text){
+  var s = String(text).replace(/\s/g,'');
+  if(!s || !/^[0-9.,]+$/.test(s)) return null;
+
+  if(s.indexOf(',') >= 0){
+    s = s.replace(/\./g, '').replace(',', '.');       // Komma ist das Dezimalzeichen
+  }else{
+    var punkte = s.split('.').length - 1;
+    if(punkte > 1){
+      s = s.replace(/\./g, '');                       // 1.234.567
+    }else if(punkte === 1 && /\.\d{3}$/.test(s)){
+      s = s.replace('.', '');                         // genau drei Stellen: Tausenderpunkt
+    }
+  }
+  var w = parseFloat(s);
+  return isFinite(w) ? w : null;
+}
+function zahl(w, stellen){
+  if(w === null || !isFinite(w)) return '–';
+  return w.toLocaleString('de-DE', {
+    minimumFractionDigits: stellen === undefined ? 0 : stellen,
+    maximumFractionDigits: stellen === undefined ? 0 : stellen
+  });
+}
+function esc(s){
+  return String(s).replace(/[&<>"]/g, function(c){
+    return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c];
+  });
+}
+
+/* Ablesungen eines Zählers, nach Datum sortiert. */
+function ablesungenVon(zid){
+  return daten.ablesungen.filter(function(a){ return a.zid === zid; })
+    .sort(function(a,b){ return a.datum < b.datum ? -1 : a.datum > b.datum ? 1 : 0; });
+}
+
+/* Zeiträume zwischen je zwei Ablesungen eines Zählers. */
+function perioden(zid){
+  var reihe = ablesungenVon(zid), raus = [], i;
+  for(i = 1; i < reihe.length; i++){
+    var v = reihe[i-1], n = reihe[i];
+    if(n.neustart) continue;                      // Zählerwechsel: Sprung zählt nicht
+    var t1 = zuTag(v.datum), t2 = zuTag(n.datum);
+    if(t2 <= t1) continue;                        // gleicher Tag oder Dopplung
+    var kwh = n.stand - v.stand;
+    if(kwh < 0) continue;                         // rückwärts laufender Stand
+    raus.push({ vonIso:v.datum, bisIso:n.datum, von:t1, bis:t2,
+                tage:t2-t1, kwh:kwh, proTag:kwh/(t2-t1), id:n.id });
+  }
+  return raus;
+}
+
+/* Verbrauch je Kalendertag, gleichmäßig über die Ableseperioden verteilt.
+   Ergebnis: { tag: kWh } über alle angefragten Zähler zusammen. */
+function tagesreihe(zids){
+  var reihe = {}, i, j;
+  for(i = 0; i < zids.length; i++){
+    var p = perioden(zids[i]);
+    for(j = 0; j < p.length; j++){
+      var rate = p[j].proTag, t;
+      for(t = p[j].von + 1; t <= p[j].bis; t++){
+        reihe[t] = (reihe[t] || 0) + rate;
+      }
+    }
+  }
+  return reihe;
+}
+
+function spanne(reihe){
+  var schluessel = Object.keys(reihe);
+  if(!schluessel.length) return null;
+  var min = Infinity, max = -Infinity, i;
+  for(i = 0; i < schluessel.length; i++){
+    var t = +schluessel[i];
+    if(t < min) min = t;
+    if(t > max) max = t;
+  }
+  return { von:min, bis:max, tage:max-min+1 };
+}
+
+/* Summe und Zahl der erfassten Tage in einem Tagesbereich. */
+function summe(reihe, vonTag, bisTag){
+  var kwh = 0, tage = 0, t;
+  for(t = vonTag; t <= bisTag; t++){
+    if(reihe[t] !== undefined){ kwh += reihe[t]; tage++; }
+  }
+  return { kwh:kwh, tage:tage };
+}
+
+/* Monatswerte der letzten n Monate (bis einschließlich Monat der letzten Ablesung). */
+function monatswerte(reihe, anzahl){
+  var sp = spanne(reihe);
+  if(!sp) return [];
+  var ende = new Date(sp.bis * TAG_MS);
+  var jahr = ende.getUTCFullYear(), monat = ende.getUTCMonth();
+  var raus = [], k;
+  for(k = anzahl - 1; k >= 0; k--){
+    var m = monat - k, j = jahr;
+    while(m < 0){ m += 12; j--; }
+    var ersterTag = Math.round(Date.UTC(j, m, 1) / TAG_MS);
+    var letzterTag = Math.round(Date.UTC(j, m+1, 1) / TAG_MS) - 1;
+    var s = summe(reihe, ersterTag, letzterTag);
+    var tageImMonat = letzterTag - ersterTag + 1;
+    raus.push({
+      label: MONATE[m], jahr:j, monat:m,
+      kurz: MONATE[m] + (m === 0 || k === anzahl-1 ? ' ' + String(j).slice(2) : ''),
+      kwh: s.kwh, tage: s.tage, voll: s.tage >= tageImMonat, tageImMonat: tageImMonat
+    });
+  }
+  return raus;
+}
+
+/* Kalenderjahre mit Verbrauch, erfassten Tagen und hochgerechnetem Jahreswert. */
+function jahreswerte(reihe){
+  var sp = spanne(reihe);
+  if(!sp) return [];
+  var vonJahr = new Date(sp.von * TAG_MS).getUTCFullYear();
+  var bisJahr = new Date(sp.bis * TAG_MS).getUTCFullYear();
+  var raus = [], j;
+  for(j = vonJahr; j <= bisJahr; j++){
+    var a = Math.round(Date.UTC(j,0,1)/TAG_MS);
+    var e = Math.round(Date.UTC(j+1,0,1)/TAG_MS) - 1;
+    var s = summe(reihe, a, e);
+    var tageImJahr = e - a + 1;
+    raus.push({
+      jahr:j, kwh:s.kwh, tage:s.tage, tageImJahr:tageImJahr,
+      voll: s.tage >= tageImJahr,
+      hoch: s.tage ? s.kwh / s.tage * tageImJahr : 0
+    });
+  }
+  return raus;
+}
+
+/* ------------------------------------------------------------------ 3. Darstellung */
+
+function $(id){ return document.getElementById(id); }
+
+var sicht = 'monat12';
+var gewaehlterBalken = -1;
+var auswertungZid = null;   // null = alle Zähler zusammen
+var listeZid = null;
+var bearbeitet = null;
+
+function zaehlerName(zid){
+  var z = daten.zaehler.filter(function(x){ return x.id === zid; })[0];
+  return z ? z.name : '—';
+}
+function aktiveZids(){
+  return auswertungZid ? [auswertungZid] : daten.zaehler.map(function(z){ return z.id; });
+}
+
+function melden(text){
+  var m = $('meldung');
+  m.textContent = text;
+  m.classList.add('an');
+  clearTimeout(melden.uhr);
+  melden.uhr = setTimeout(function(){ m.classList.remove('an'); }, 2200);
+}
+
+/* ---- Chips ---- */
+function chipsZeichnen(el, gewaehlt, mitAlle, beiWahl){
+  var html = '';
+  if(mitAlle){
+    html += '<button type="button" class="chip" data-id="" aria-pressed="' +
+            (gewaehlt === null) + '">Alle</button>';
+  }
+  daten.zaehler.forEach(function(z){
+    html += '<button type="button" class="chip" data-id="' + esc(z.id) + '" aria-pressed="' +
+            (gewaehlt === z.id) + '">' + esc(z.name) + '</button>';
+  });
+  el.innerHTML = html;
+  Array.prototype.forEach.call(el.querySelectorAll('.chip'), function(b){
+    b.addEventListener('click', function(){ beiWahl(b.getAttribute('data-id') || null); });
+  });
+}
+
+/* ---- Seite „Eintragen" ---- */
+function eingabeZeichnen(){
+  chipsZeichnen($('chips-eingabe'), daten.aktiv, false, function(id){
+    daten.aktiv = id; sichern(); eingabeZeichnen(); vorschauZeichnen();
+  });
+  vorschauZeichnen();
+}
+
+/* Zeigt vor dem Speichern, was der eingetippte Stand bedeutet. */
+function vorschauZeichnen(){
+  var box = $('vorschau');
+  var reihe = ablesungenVon(daten.aktiv);
+  var datum = $('datum').value;
+  var stand = zahlAus($('stand').value);
+
+  box.classList.remove('warn');
+
+  if(!reihe.length){
+    box.innerHTML = stand === null
+      ? 'Noch keine Ablesung für <b>' + esc(zaehlerName(daten.aktiv)) + '</b>. Der erste Stand ist der Ausgangswert – ab der zweiten Ablesung wird gerechnet.'
+      : 'Erste Ablesung: <b>' + zahl(stand,1) + ' kWh</b>. Ab der nächsten Ablesung zeigt die App den Verbrauch.';
+    return;
+  }
+
+  /* letzte Ablesung vor dem eingetragenen Datum suchen */
+  var vorher = null, i;
+  for(i = 0; i < reihe.length; i++){
+    if(datum && reihe[i].datum < datum) vorher = reihe[i];
+  }
+  if(!vorher) vorher = reihe[reihe.length-1];
+
+  if(stand === null){
+    box.innerHTML = 'Letzter Stand: <b>' + zahl(vorher.stand,1) + ' kWh</b> vom ' +
+                    deDatum(vorher.datum) + '.';
+    return;
+  }
+
+  var tage = datum ? zuTag(datum) - zuTag(vorher.datum) : 0;
+  var diff = stand - vorher.stand;
+
+  if(tage <= 0){
+    box.classList.add('warn');
+    box.innerHTML = 'Das Datum liegt nicht nach der letzten Ablesung (' +
+                    deDatum(vorher.datum) + '). Bitte prüfen.';
+    return;
+  }
+  if(diff < 0){
+    box.classList.add('warn');
+    box.innerHTML = 'Der Stand ist <b>kleiner</b> als am ' + deDatum(vorher.datum) +
+                    ' (' + zahl(vorher.stand,1) + ' kWh). Bei einem Zählerwechsel lässt sich die ' +
+                    'Ablesung nach dem Speichern unter „Ablesungen“ als Neustart kennzeichnen.';
+    return;
+  }
+  box.innerHTML = '<b>' + zahl(diff,1) + ' kWh</b> in ' + tage + ' Tagen seit dem ' +
+                  deDatum(vorher.datum) + '<br>entspricht <b>' + zahl(diff/tage,2) +
+                  ' kWh</b> am Tag, hochgerechnet ' + zahl(diff/tage*365,0) + ' kWh im Jahr.';
+}
+
+/* ---- Seite „Auswertung" ---- */
+function auswertungZeichnen(){
+  chipsZeichnen($('chips-auswertung'), auswertungZid, true, function(id){
+    auswertungZid = id; gewaehlterBalken = -1; auswertungZeichnen();
+  });
+
+  var reihe = tagesreihe(aktiveZids());
+  var sp = spanne(reihe);
+
+  kachelnZeichnen(reihe, sp);
+  diagrammZeichnen(reihe);
+  jahreZeichnen(reihe, sp);
+}
+
+function kachelnZeichnen(reihe, sp){
+  var el = $('kacheln');
+  if(!sp){
+    el.innerHTML = '<div class="leer" style="grid-column:1/-1">Noch keine Auswertung möglich.<br>' +
+                   'Dafür sind mindestens zwei Ablesungen an verschiedenen Tagen nötig.</div>';
+    return;
+  }
+
+  var gesamt = summe(reihe, sp.von, sp.bis);
+  var l30    = summe(reihe, sp.bis - 29, sp.bis);
+  var l365   = summe(reihe, sp.bis - 364, sp.bis);
+  var schnitt30  = l30.tage  ? l30.kwh / l30.tage   : 0;
+  var schnitt365 = l365.tage ? l365.kwh / l365.tage : 0;
+  var schnittGes = gesamt.tage ? gesamt.kwh / gesamt.tage : 0;
+  var hoch = (l365.tage >= 60 ? schnitt365 : schnittGes) * 365;
+
+  /* Jüngster Ablesezeitraum. Bei mehreren Zählern zählt der Zeitraum der
+     zuletzt eingetragenen Ablesung – der Verbrauch darin wird aber über
+     alle angefragten Zähler zusammengerechnet, sonst stünde dort nur der
+     Wert eines einzelnen Zählers. */
+  var letzte = null;
+  aktiveZids().forEach(function(zid){
+    var p = perioden(zid);
+    if(p.length){
+      var k = p[p.length-1];
+      if(!letzte || k.bis > letzte.bis) letzte = k;
+    }
+  });
+  var letzteSumme = letzte ? summe(reihe, letzte.von + 1, letzte.bis) : null;
+
+  var kacheln = [
+    { wert: zahl(schnitt30,2),  einheit:'kWh/Tag', bez:'Schnitt der letzten 30 Tage' +
+        (l30.tage < 30 ? ' (nur ' + l30.tage + ' erfasst)' : '') },
+    { wert: zahl(hoch,0),       einheit:'kWh',     bez:'hochgerechnet aufs Jahr' },
+    { wert: letzteSumme && letzteSumme.tage ? zahl(letzteSumme.kwh/letzteSumme.tage,2) : '–',
+      einheit:'kWh/Tag',
+      bez: letzte ? 'letzter Zeitraum (' + letzte.tage + ' Tage bis ' +
+           kurzDatum(letzte.bisIso) + ')' : 'letzter Zeitraum' },
+    { wert: zahl(gesamt.kwh,0), einheit:'kWh',     bez:'erfasst seit ' + deDatum(zuIso(sp.von)) +
+        ' (' + gesamt.tage + ' Tage)' }
+  ];
+
+  el.innerHTML = kacheln.map(function(k){
+    return '<div class="kachel"><div class="wert">' + k.wert +
+           '<small>' + k.einheit + '</small></div><div class="bez">' + k.bez + '</div></div>';
+  }).join('');
+}
+
+function diagrammZeichnen(reihe){
+  var punkte;
+  if(sicht === 'ablesung'){
+    var alle = [];
+    aktiveZids().forEach(function(zid){
+      perioden(zid).forEach(function(p){
+        alle.push({ p:p, zid:zid });
+      });
+    });
+    alle.sort(function(a,b){ return a.p.bis - b.p.bis; });
+    alle = alle.slice(-16);
+    punkte = alle.map(function(e){
+      return {
+        kurz: kurzDatum(e.p.bisIso),
+        wert: e.p.kwh,
+        voll: true,
+        text: '<b>' + zahl(e.p.kwh,1) + ' kWh</b> vom ' + deDatum(e.p.vonIso) + ' bis ' +
+              deDatum(e.p.bisIso) + ' · ' + e.p.tage + ' Tage · ' + zahl(e.p.proTag,2) +
+              ' kWh/Tag' + (auswertungZid ? '' : ' · ' + esc(zaehlerName(e.zid)))
+      };
+    });
+  }else{
+    var anzahl = sicht === 'monat24' ? 24 : 12;
+    punkte = monatswerte(reihe, anzahl).map(function(m){
+      return {
+        kurz: m.kurz,
+        wert: m.kwh,
+        voll: m.voll,
+        text: '<b>' + zahl(m.kwh,0) + ' kWh</b> im ' + m.label + ' ' + m.jahr +
+              (m.voll ? '' : ' · nur ' + m.tage + ' von ' + m.tageImMonat + ' Tagen erfasst') +
+              (m.tage ? ' · ' + zahl(m.kwh/m.tage,2) + ' kWh/Tag' : '')
+      };
+    });
+  }
+
+  $('diagrammHinweis').innerHTML = sicht === 'ablesung'
+    ? 'Ein Balken je Ablesung, also je nach Abstand über unterschiedlich viele Tage.' +
+      (auswertungZid ? '' : ' Bei „Alle“ stehen die Zeiträume der einzelnen Zähler nebeneinander – zum Vergleichen besser einen Zähler wählen.') +
+      ' Zum Ablesen auf einen Balken tippen.'
+    : 'Blasse Balken sind noch nicht vollständig – dort fehlen Tage ohne Ablesung. Zum Ablesen auf einen Balken tippen.';
+
+  var ziel = $('diagramm');
+  if(!punkte.length || !punkte.some(function(p){ return p.wert > 0; })){
+    ziel.innerHTML = '<div class="leer">Noch nichts zu zeigen.</div>';
+    $('detail').innerHTML = '';
+    $('diagrammHinweis').innerHTML = '';
+    return;
+  }
+
+  var B = 340, H = 196, oben = 14, unten = 26, links = 34, rechts = 4;
+  var flaecheH = H - oben - unten, flaecheB = B - links - rechts;
+  var max = Math.max.apply(null, punkte.map(function(p){ return p.wert; }));
+  var ober = schoeneObergrenze(max);
+  var breite = flaecheB / punkte.length;
+  var bb = Math.min(breite * 0.64, 30);
+
+  var s = '<svg class="diagramm" viewBox="0 0 ' + B + ' ' + H + '" role="img" aria-label="Verbrauch je Zeitraum">';
+
+  /* Gitter mit drei Linien */
+  [0, 0.5, 1].forEach(function(anteil){
+    var y = oben + flaecheH * (1 - anteil);
+    s += '<line class="gitter" x1="' + links + '" y1="' + y + '" x2="' + (B-rechts) + '" y2="' + y + '"/>';
+    s += '<text x="' + (links-5) + '" y="' + (y+3.5) + '" font-size="9" text-anchor="end">' +
+         zahl(ober*anteil, 0) + '</text>';
+  });
+
+  punkte.forEach(function(p, i){
+    var mitte = links + breite * i + breite/2;
+    var h = ober ? flaecheH * (p.wert / ober) : 0;
+    var y = oben + flaecheH - h;
+    var klasse = 'balken' + (p.voll ? '' : ' teil') + (i === gewaehlterBalken ? ' gewaehlt' : '');
+    s += '<rect class="' + klasse + '" x="' + (mitte - bb/2) + '" y="' + y +
+         '" width="' + bb + '" height="' + Math.max(h, 1.5) + '" rx="3"/>';
+    if(punkte.length <= 14 || i % 2 === 0){
+      s += '<text x="' + mitte + '" y="' + (H-9) + '" font-size="8.5" text-anchor="middle">' +
+           esc(p.kurz) + '</text>';
+    }
+    s += '<rect class="tipp" data-i="' + i + '" x="' + (links + breite*i) + '" y="' + oben +
+         '" width="' + breite + '" height="' + flaecheH + '"/>';
+  });
+
+  s += '</svg>';
+  ziel.innerHTML = s;
+
+  Array.prototype.forEach.call(ziel.querySelectorAll('.tipp'), function(r){
+    r.addEventListener('click', function(){
+      var i = +r.getAttribute('data-i');
+      gewaehlterBalken = (gewaehlterBalken === i) ? -1 : i;
+      diagrammZeichnen(reihe);
+    });
+  });
+
+  $('detail').innerHTML = gewaehlterBalken >= 0 && punkte[gewaehlterBalken]
+    ? punkte[gewaehlterBalken].text
+    : 'Summe aller gezeigten Zeiträume: <b>' +
+      zahl(punkte.reduce(function(a,p){ return a + p.wert; }, 0), 0) + ' kWh</b>';
+}
+
+/* Runde Obergrenze für die Achse, damit die Beschriftung lesbare Zahlen zeigt. */
+function schoeneObergrenze(max){
+  if(max <= 0) return 1;
+  var stufe = Math.pow(10, Math.floor(Math.log(max) / Math.LN10));
+  var rest = max / stufe;
+  var faktor = rest <= 1 ? 1 : rest <= 2 ? 2 : rest <= 2.5 ? 2.5 : rest <= 5 ? 5 : 10;
+  return faktor * stufe;
+}
+
+function jahreZeichnen(reihe, sp){
+  var el = $('jahre');
+  if(!sp){ el.innerHTML = '<div class="leer">Noch keine Jahreswerte.</div>'; return; }
+
+  var jahre = jahreswerte(reihe);
+  var html = '<table class="jahre"><tr><th>Jahr</th><th>Verbrauch</th><th>kWh/Tag</th><th>+/−</th></tr>';
+  jahre.forEach(function(j, i){
+    var proTag = j.tage ? j.kwh / j.tage : 0;
+    var vergleich = '–';
+    if(i > 0 && jahre[i-1].tage){
+      var vorher = jahre[i-1].kwh / jahre[i-1].tage;
+      if(vorher > 0){
+        var p = (proTag - vorher) / vorher * 100;
+        var farbe = p > 2 ? 'var(--rot)' : p < -2 ? 'var(--gruen)' : 'var(--muted)';
+        vergleich = '<span style="color:' + farbe + '">' + (p >= 0 ? '+' : '−') +
+                    zahl(Math.abs(p),1) + ' %</span>';
+      }
+    }
+    html += '<tr><td>' + j.jahr + '</td><td class="verbrauch">' + zahl(j.kwh,0) + ' kWh' +
+            (j.voll ? '' : '<br><span class="teiljahr">' + j.tage + ' von ' + j.tageImJahr +
+             ' Tagen · Jahr ≈ ' + zahl(j.hoch,0) + '</span>') +
+            '</td><td>' + zahl(proTag,2) + '</td><td>' + vergleich + '</td></tr>';
+  });
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+/* ---- Seite „Ablesungen" ---- */
+function listeZeichnen(){
+  chipsZeichnen($('chips-liste'), listeZid, true, function(id){
+    listeZid = id; listeZeichnen();
+  });
+
+  var zids = listeZid ? [listeZid] : daten.zaehler.map(function(z){ return z.id; });
+  var eintraege = [];
+
+  zids.forEach(function(zid){
+    var reihe = ablesungenVon(zid);
+    reihe.forEach(function(a, i){
+      var vorher = i > 0 ? reihe[i-1] : null;
+      var diff = null, tage = null;
+      if(vorher && !a.neustart){
+        tage = zuTag(a.datum) - zuTag(vorher.datum);
+        if(tage > 0 && a.stand >= vorher.stand) diff = a.stand - vorher.stand;
+      }
+      eintraege.push({ a:a, zid:zid, diff:diff, tage:tage });
+    });
+  });
+  eintraege.sort(function(x,y){ return x.a.datum < y.a.datum ? 1 : x.a.datum > y.a.datum ? -1 : 0; });
+
+  var el = $('liste');
+  if(!eintraege.length){
+    el.innerHTML = '<li><div class="leer" style="width:100%">Noch keine Ablesung erfasst.</div></li>';
+    return;
+  }
+
+  el.innerHTML = eintraege.map(function(e){
+    var unter = zahl(e.a.stand,1) + ' kWh';
+    if(!listeZid) unter += ' · ' + esc(zaehlerName(e.zid));
+    if(e.a.neustart) unter += ' · Zählerwechsel';
+    if(e.a.notiz) unter += ' · ' + esc(e.a.notiz);
+
+    var rechts = e.diff === null
+      ? '<div class="proTag">—</div>'
+      : '<div class="diff">' + zahl(e.diff,1) + '</div><div class="proTag">' +
+        zahl(e.diff/e.tage,2) + ' kWh/Tag</div>';
+
+    return '<li><div class="links"><div class="datum">' + deDatum(e.a.datum) + '</div>' +
+           '<div class="unter">' + unter + '</div></div>' +
+           '<div class="rechts">' + rechts + '</div>' +
+           '<button type="button" data-id="' + esc(e.a.id) + '" title="Ändern">✏️</button></li>';
+  }).join('');
+
+  Array.prototype.forEach.call(el.querySelectorAll('button[data-id]'), function(b){
+    b.addEventListener('click', function(){ fensterOeffnen(b.getAttribute('data-id')); });
+  });
+}
+
+/* ---- Seite „Daten" ---- */
+function datenZeichnen(){
+  var el = $('zaehlerliste');
+  el.innerHTML = daten.zaehler.map(function(z){
+    var n = daten.ablesungen.filter(function(a){ return a.zid === z.id; }).length;
+    return '<li><div class="links"><div class="datum">' + esc(z.name) + '</div>' +
+           '<div class="unter">' + n + (n === 1 ? ' Ablesung' : ' Ablesungen') + '</div></div>' +
+           '<button type="button" data-um="' + esc(z.id) + '" title="Umbenennen">✏️</button>' +
+           '<button type="button" data-weg="' + esc(z.id) + '" title="Löschen">🗑️</button></li>';
+  }).join('');
+
+  Array.prototype.forEach.call(el.querySelectorAll('button[data-um]'), function(b){
+    b.addEventListener('click', function(){ zaehlerUmbenennen(b.getAttribute('data-um')); });
+  });
+  Array.prototype.forEach.call(el.querySelectorAll('button[data-weg]'), function(b){
+    b.addEventListener('click', function(){ zaehlerLoeschen(b.getAttribute('data-weg')); });
+  });
+
+  var sp = spanne(tagesreihe(daten.zaehler.map(function(z){ return z.id; })));
+  $('bestand').innerHTML =
+    '<div class="kacheln">' +
+    '<div class="kachel"><div class="wert">' + daten.ablesungen.length +
+      '<small>Stück</small></div><div class="bez">Ablesungen gesamt</div></div>' +
+    '<div class="kachel"><div class="wert">' + daten.zaehler.length +
+      '<small>Stück</small></div><div class="bez">Zähler</div></div>' +
+    '</div>' +
+    (sp ? '<p class="hinweis">Erfasst vom ' + deDatum(zuIso(sp.von)) + ' bis ' +
+          deDatum(zuIso(sp.bis)) + '.</p>' : '');
+}
+
+/* ------------------------------------------------------------------ 4. Bedienung */
+
+/* ---- Seitenwechsel ---- */
+function seiteZeigen(name){
+  Array.prototype.forEach.call(document.querySelectorAll('.seite'), function(s){
+    s.classList.toggle('an', s.id === 'seite-' + name);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('nav.leiste button'), function(b){
+    b.setAttribute('aria-pressed', String(b.getAttribute('data-seite') === name));
+  });
+  if(name === 'eintragen')  eingabeZeichnen();
+  if(name === 'auswertung') auswertungZeichnen();
+  if(name === 'ablesungen') listeZeichnen();
+  if(name === 'daten')      datenZeichnen();
+  window.scrollTo(0,0);
+}
+
+Array.prototype.forEach.call(document.querySelectorAll('nav.leiste button'), function(b){
+  b.addEventListener('click', function(){ seiteZeigen(b.getAttribute('data-seite')); });
+});
+
+Array.prototype.forEach.call(document.querySelectorAll('#umschalter button'), function(b){
+  b.addEventListener('click', function(){
+    sicht = b.getAttribute('data-sicht');
+    gewaehlterBalken = -1;
+    Array.prototype.forEach.call(document.querySelectorAll('#umschalter button'), function(x){
+      x.setAttribute('aria-pressed', String(x === b));
+    });
+    auswertungZeichnen();
+  });
+});
+
+/* ---- Ablesung speichern ---- */
+$('speichern').addEventListener('click', function(){
+  var datum = $('datum').value;
+  var stand = zahlAus($('stand').value);
+
+  if(!datum){ melden('Bitte ein Datum wählen.'); return; }
+  if(stand === null){ melden('Bitte einen Zählerstand eintragen.'); return; }
+  if(stand < 0){ melden('Der Zählerstand kann nicht negativ sein.'); return; }
+
+  var doppelt = daten.ablesungen.filter(function(a){
+    return a.zid === daten.aktiv && a.datum === datum;
+  })[0];
+  if(doppelt && !window.confirm('Für den ' + deDatum(datum) +
+      ' gibt es schon eine Ablesung (' + zahl(doppelt.stand,1) + ' kWh). Überschreiben?')){
+    return;
+  }
+
+  if(doppelt){
+    doppelt.stand = stand;
+    doppelt.notiz = $('notiz').value.trim();
+  }else{
+    daten.ablesungen.push({
+      id: neueId(), zid: daten.aktiv, datum: datum, stand: stand,
+      neustart: false, notiz: $('notiz').value.trim()
+    });
+  }
+
+  sichern();
+  $('stand').value = '';
+  $('notiz').value = '';
+  melden('Gespeichert.');
+  eingabeZeichnen();
+});
+
+$('stand').addEventListener('input', vorschauZeichnen);
+$('datum').addEventListener('change', vorschauZeichnen);
+
+/* ---- Fenster „Ablesung ändern" ---- */
+function fensterOeffnen(id){
+  bearbeitet = daten.ablesungen.filter(function(a){ return a.id === id; })[0];
+  if(!bearbeitet) return;
+  $('fensterTitel').textContent = 'Ablesung · ' + zaehlerName(bearbeitet.zid);
+  $('bDatum').value = bearbeitet.datum;
+  $('bStand').value = String(bearbeitet.stand).replace('.', ',');
+  $('bNotiz').value = bearbeitet.notiz || '';
+  $('bNeustart').checked = !!bearbeitet.neustart;
+  $('ueber').classList.add('an');
+}
+function fensterSchliessen(){
+  $('ueber').classList.remove('an');
+  bearbeitet = null;
+}
+$('bAbbruch').addEventListener('click', fensterSchliessen);
+$('ueber').addEventListener('click', function(e){
+  if(e.target === $('ueber')) fensterSchliessen();
+});
+$('bSichern').addEventListener('click', function(){
+  if(!bearbeitet) return;
+  var datum = $('bDatum').value;
+  var stand = zahlAus($('bStand').value);
+  if(!datum || stand === null){ melden('Datum und Zählerstand werden gebraucht.'); return; }
+  bearbeitet.datum = datum;
+  bearbeitet.stand = stand;
+  bearbeitet.notiz = $('bNotiz').value.trim();
+  bearbeitet.neustart = $('bNeustart').checked;
+  sichern();
+  fensterSchliessen();
+  listeZeichnen();
+  melden('Geändert.');
+});
+$('bLoeschen').addEventListener('click', function(){
+  if(!bearbeitet) return;
+  if(!window.confirm('Ablesung vom ' + deDatum(bearbeitet.datum) + ' löschen?')) return;
+  daten.ablesungen = daten.ablesungen.filter(function(a){ return a.id !== bearbeitet.id; });
+  sichern();
+  fensterSchliessen();
+  listeZeichnen();
+  melden('Gelöscht.');
+});
+
+/* ---- Zähler verwalten ---- */
+$('zaehlerAnlegen').addEventListener('click', function(){
+  var name = $('neuerZaehler').value.trim();
+  if(!name){ melden('Bitte einen Namen eintragen.'); return; }
+  daten.zaehler.push({ id: neueId(), name: name });
+  $('neuerZaehler').value = '';
+  sichern();
+  datenZeichnen();
+  melden('Zähler angelegt.');
+});
+
+function zaehlerUmbenennen(zid){
+  var z = daten.zaehler.filter(function(x){ return x.id === zid; })[0];
+  if(!z) return;
+  var name = window.prompt('Neuer Name für den Zähler:', z.name);
+  if(name === null) return;
+  name = name.trim();
+  if(!name) return;
+  z.name = name;
+  sichern();
+  datenZeichnen();
+}
+
+function zaehlerLoeschen(zid){
+  if(daten.zaehler.length < 2){ melden('Der letzte Zähler kann nicht weg.'); return; }
+  var n = daten.ablesungen.filter(function(a){ return a.zid === zid; }).length;
+  if(!window.confirm('„' + zaehlerName(zid) + '“ mit ' + n +
+      ' Ablesungen endgültig löschen?')) return;
+  daten.zaehler = daten.zaehler.filter(function(z){ return z.id !== zid; });
+  daten.ablesungen = daten.ablesungen.filter(function(a){ return a.zid !== zid; });
+  if(daten.aktiv === zid) daten.aktiv = daten.zaehler[0].id;
+  if(auswertungZid === zid) auswertungZid = null;
+  if(listeZid === zid) listeZid = null;
+  sichern();
+  datenZeichnen();
+  melden('Zähler gelöscht.');
+}
+
+/* ---- Sichern, einlesen, löschen ---- */
+function dateiGeben(inhalt, name, typ){
+  var blob = new Blob([inhalt], { type: typ + ';charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+}
+
+$('exportJson').addEventListener('click', function(){
+  dateiGeben(JSON.stringify(daten, null, 2),
+             'stromverbrauch-' + heuteIso() + '.json', 'application/json');
+  melden('Sicherung erstellt.');
+});
+
+$('exportCsv').addEventListener('click', function(){
+  var zeilen = ['Zaehler;Datum;Stand_kWh;Verbrauch_kWh;Tage;kWh_pro_Tag;Zaehlerwechsel;Notiz'];
+  daten.zaehler.forEach(function(z){
+    var reihe = ablesungenVon(z.id);
+    reihe.forEach(function(a, i){
+      var diff = '', tage = '', proTag = '';
+      if(i > 0 && !a.neustart){
+        var t = zuTag(a.datum) - zuTag(reihe[i-1].datum);
+        if(t > 0 && a.stand >= reihe[i-1].stand){
+          tage = t;
+          diff = (a.stand - reihe[i-1].stand).toFixed(1).replace('.', ',');
+          proTag = ((a.stand - reihe[i-1].stand)/t).toFixed(2).replace('.', ',');
+        }
+      }
+      zeilen.push([
+        z.name.replace(/;/g,','), a.datum, String(a.stand).replace('.', ','),
+        diff, tage, proTag, a.neustart ? 'ja' : '', (a.notiz || '').replace(/;/g,',')
+      ].join(';'));
+    });
+  });
+  /* BOM voran, damit Excel die Umlaute richtig zeigt */
+  dateiGeben('﻿' + zeilen.join('\r\n'),
+             'stromverbrauch-' + heuteIso() + '.csv', 'text/csv');
+  melden('Tabelle erstellt.');
+});
+
+$('importKnopf').addEventListener('click', function(){ $('importDatei').click(); });
+
+$('importDatei').addEventListener('change', function(){
+  var datei = $('importDatei').files[0];
+  if(!datei) return;
+  var leser = new FileReader();
+  leser.onload = function(){
+    var g;
+    try{ g = JSON.parse(leser.result); }
+    catch(e){ melden('Die Datei ist keine gültige Sicherung.'); return; }
+    if(!g || !Array.isArray(g.zaehler) || !Array.isArray(g.ablesungen)){
+      melden('Die Datei enthält keine Stromdaten.'); return;
+    }
+    if(!window.confirm('Einlesen ersetzt den vorhandenen Bestand (' +
+        daten.ablesungen.length + ' Ablesungen) durch ' + g.ablesungen.length +
+        ' Ablesungen aus der Datei. Fortfahren?')) return;
+    daten.zaehler = g.zaehler;
+    daten.ablesungen = g.ablesungen;
+    daten.aktiv = g.aktiv || (g.zaehler[0] && g.zaehler[0].id) || null;
+    auswertungZid = null; listeZid = null;
+    sichern();
+    laden();
+    seiteZeigen('auswertung');
+    melden('Eingelesen.');
+  };
+  leser.readAsText(datei);
+  $('importDatei').value = '';
+});
+
+$('allesLoeschen').addEventListener('click', function(){
+  if(!window.confirm('Wirklich alle Zähler und Ablesungen löschen? Das lässt sich nicht rückgängig machen.')) return;
+  if(!window.confirm('Letzte Nachfrage: ' + daten.ablesungen.length + ' Ablesungen werden gelöscht.')) return;
+  daten.zaehler = []; daten.ablesungen = []; daten.aktiv = null;
+  laden(); sichern();
+  datenZeichnen();
+  melden('Alles gelöscht.');
+});
+
+/* ---- Hell und dunkel ---- */
+var FARBE = { hell:'#fffbeb', dunkel:'#1a1206' };
+
+function themaSetzen(wert, merken){
+  document.documentElement.setAttribute('data-theme', wert);
+  $('theme').textContent = wert === 'dunkel' ? '☀️' : '🌙';
+  $('farbleiste').setAttribute('content', FARBE[wert]);
+  if(merken){ daten.theme = wert; sichern(); }
+}
+
+$('theme').addEventListener('click', function(){
+  var jetzt = document.documentElement.getAttribute('data-theme');
+  themaSetzen(jetzt === 'dunkel' ? 'hell' : 'dunkel', true);
+});
+
+/* ---- Start ---- */
+laden();
+themaSetzen(daten.theme || (window.matchMedia &&
+  window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dunkel' : 'hell'), false);
+$('datum').value = heuteIso();
+$('datum').max = heuteIso();
+seiteZeigen(daten.ablesungen.length ? 'auswertung' : 'eintragen');
+
+/* Offline-Dienst anmelden. Ohne ihn läuft alles genauso, nur eben nicht
+   ohne Netz – deshalb bleibt ein Fehlschlag folgenlos. */
+if('serviceWorker' in navigator && location.protocol !== 'file:'){
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('sw.js')['catch'](function(){});
+  });
+}
+
+})();
+</script>
+</body>
+</html>
